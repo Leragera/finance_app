@@ -1,0 +1,60 @@
+import 'package:flutter/material.dart';
+import '../database/db_helper.dart';
+
+class AddCategoryScreen extends StatefulWidget {
+  final String type; // 'income' или 'expense'
+
+  const AddCategoryScreen({super.key, required this.type});
+
+  @override
+  State<AddCategoryScreen> createState() => _AddCategoryScreenState();
+}
+
+class _AddCategoryScreenState extends State<AddCategoryScreen> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void saveCategory() async {
+    if (_controller.text.trim().isEmpty) return;
+
+    await DBHelper.instance.insertCategory({
+      'name': _controller.text.trim(),
+      'type': widget.type,
+    });
+
+    Navigator.pop(context, true); // 🔥 важно для обновления
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Новая категория"),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: _controller,
+              decoration: const InputDecoration(
+                labelText: "Название категории",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: saveCategory,
+              child: const Text("Сохранить"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

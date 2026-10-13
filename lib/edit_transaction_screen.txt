@@ -1,0 +1,177 @@
+import 'package:flutter/material.dart';
+import '../database/db_helper.dart';
+
+class EditTransactionScreen extends StatefulWidget {
+  final Map<String, dynamic> transaction;
+
+  const EditTransactionScreen({super.key, required this.transaction});
+
+  @override
+  State<EditTransactionScreen> createState() => _EditTransactionScreenState();
+}
+
+class _EditTransactionScreenState extends State<EditTransactionScreen> {
+  late TextEditingController _titleController;
+  late TextEditingController _amountController;
+  late String _selectedCategory;
+  late int? _selectedAccountId;
+
+  List<Map<String, dynamic>> accounts = [];
+
+  final List<String> _incomeCategories = [
+    "Зарплата",
+    "Стипендия",
+    "Пенсия",
+    "Подарки",
+    "Другое"
+  ];
+
+  final List<String> _expenseCategories = [
+    "Еда",
+    "Транспорт",
+    "Жильё",
+    "Развлечения",
+    "Другое"
+  ];
+
+  List<String> get _categories =>
+      widget.transaction['type'] == 'income' ? _incomeCategories : _expenseCategories;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.transaction['title']);
+    _amountController = TextEditingController(
+      text: widget.transaction['amount'].toString()
+    );
+    _selectedCategory = widget.transaction['category'] ?? _categories[0];
+    _selectedAccountId = widget.transaction['accountId'];
+    loadAccounts();
+  }
+
+  void loadAccounts() async {
+    final data = await DBHelper.instance.getAccounts();
+    setState(() {
+      accounts = data;
+    });
+  }
+
+  void _saveTransaction() async {
+    final title = _titleController.text;
+    final amount = double.tryParse(_amountController.text);
+
+    if (title.isEmpty || amount == null || _selectedAccountId == null) return;
+
+    await DBHelper.instance.updateTransaction(
+      widget.transaction['id'],
+      {
+        'title': title,
+        'amount': amount,
+        'category': _selectedCategory,
+        'accountId': _selectedAccountId,
+        'type': widget.transaction['type'], // тип не меняем
+      },
+    );
+
+    if (mounted) {
+      Navigator.pop(context, true);
+    }
+  }
+
+  void _deleteTransaction() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Удалить ${widget.transaction['type'] == 'income' ? 'доход' : 'расход'}?'),
+        content: const Text('Вы уверены?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      await DBHelper.instance.deleteTransaction(
+        widget.transaction['id'],
+        widget.transaction['accountId'],
+        widget.transaction['amount'],
+        widget.transaction['type'],
+      );
+
+      if (mounted) {
+        Navigator.pop(context, true);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Редактировать ${widget.transaction['type'] == 'income' ? 'доход' : 'расход'}'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete),
+            onPressed: _deleteTransaction,
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: _titleController,
+              decoration: InputDecoration(
+                labelText: widget.transaction['type'] == 'income' ? 'Источник' : 'Название',
+              ),
+            ),
+            TextField(
+              controller: _amountController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: "Сумма"),
+            ),
+            DropdownButton<String>(
+              value: _selectedCategory,
+              isExpanded: true,
+              items: _categories.map((c) {
+                return DropdownMenuItem(value: c, child: Text(c));
+              }).toList(),
+              onChanged: (val) {
+                setState(() => _selectedCategory = val!);
+              },
+            ),
+            DropdownButton<int>(
+              value: _selectedAccountId,
+              isExpanded: true,
+              hint: const Text("Выберите счет"),
+              items: accounts.map<DropdownMenuItem<int>>((acc) {
+                return DropdownMenuItem<int>(
+                  value: acc['id'] as int,
+                  child: Text("${acc['name']} (${acc['currency']})"),
+                );
+              }).toList(),
+              onChanged: (val) {
+                setState(() {
+                  _selectedAccountId = val;
+                });
+              },
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _saveTransaction,
+              child: const Text("Сохранить"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

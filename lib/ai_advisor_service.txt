@@ -1,0 +1,242 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '../database/db_helper.dart';
+
+class AIAdvisorService {
+  final DBHelper _db = DBHelper.instance;
+  static const bool useOpenAI = false; // Отключено
+
+  Future<String> getAdvice(String question) async {
+    if (useOpenAI) {
+      return await _getOpenAIAdvice(question);
+    } else {
+      return await _getRuleBasedAdvice(question);
+    }
+  }
+
+  Future<String> _getRuleBasedAdvice(String question) async {
+    question = question.toLowerCase().trim();
+
+    try {
+      // 🔥 Паттерн 1: "Хочу купить [что-то] за [сумма]"
+      final buyPattern = RegExp(r'хочу\s+купить.*?за\s+([\d\s]+)');
+      final buyMatch = buyPattern.firstMatch(question);
+      if (buyMatch != null) {
+        final amountStr = buyMatch.group(1)!.replaceAll(' ', '');
+        final amount = double.tryParse(amountStr);
+        if (amount != null) {
+          return await _getSavingsAdvice(amount);
+        }
+      }
+
+      // 🔥 Паттерн 2: "Хочу [что-то] за [сумма]" (без "купить")
+      final wantPattern = RegExp(r'хочу.*?за\s+([\d\s]+)');
+      final wantMatch = wantPattern.firstMatch(question);
+      if (wantMatch != null) {
+        final amountStr = wantMatch.group(1)!.replaceAll(' ', '');
+        final amount = double.tryParse(amountStr);
+        if (amount != null) {
+          return await _getSavingsAdvice(amount);
+        }
+      }
+
+      // 🔥 Паттерн 3: "Где я трачу больше всего"
+      if (question.contains('трачу') || question.contains('расход')) {
+        return await _getSpendingAnalysis();
+      }
+
+      // 🔥 Паттерн 4: "Как сэкономить"
+      if (question.contains('сэкономить') || question.contains('сократить')) {
+        return await _getSavingTips();
+      }
+
+      // 🔥 Паттерн 5: "Отпуск" / "поездка"
+      if (question.contains('отпуск') || question.contains('поездк')) {
+        final amountPattern = RegExp(r'за\s+([\d\s]+)');
+        final amountMatch = amountPattern.firstMatch(question);
+        if (amountMatch != null) {
+          final amountStr = amountMatch.group(1)!.replaceAll(' ', '');
+          final amount = double.tryParse(amountStr);
+          if (amount != null) {
+            return await _getSavingsAdvice(amount);
+          }
+        }
+      }
+
+      return _getHelpMessage();
+    } catch (e) {
+      return "❌ Произошла ошибка при обработке вопроса. Попробуйте перефразировать.\n\nОшибка: $e";
+    }
+  }
+
+  Future<String> _getSavingsAdvice(double targetAmount) async {
+    final transactions = await _db.getTransactions();
+    final now = DateTime.now();
+    final threeMonthsAgo = DateTime(now.year, now.month - 3, 1);
+
+    final recentTransactions = transactions.where((t) {
+      final date = DateTime.parse(t['date']);
+      return date.isAfter(threeMonthsAgo);
+    }).toList();
+
+    final avgIncome = recentTransactions
+        .where((t) => t['type'] == 'income')
+        .fold(0.0, (sum, t) => sum + t['amount']) / 3;
+
+    final avgExpense = recentTransactions
+        .where((t) => t['type'] == 'expense')
+        .fold(0.0, (sum, t) => sum + t['amount']) / 3;
+
+    final monthlySavings = avgIncome - avgExpense;
+    final accounts = await _db.getAccounts();
+    final currentBalance = accounts.fold(0.0, (sum, acc) => sum + (acc['balance'] ?? 0));
+
+    if (currentBalance >= targetAmount) {
+      return "✅ Отличные новости!\n\n"
+             "У вас уже есть ${currentBalance.toStringAsFixed(0)} ₽, "
+             "что достаточно для покупки за ${targetAmount.toStringAsFixed(0)} ₽.\n\n"
+             "После покупки останется ${(currentBalance - targetAmount).toStringAsFixed(0)} ₽.";
+    }
+
+    if (monthlySavings <= 0) {
+      return "⚠️ Сейчас расходы превышают доходы!\n\n"
+             "📊 Доходы: ${avgIncome.toStringAsFixed(0)} ₽/мес\n"
+             "📊 Расходы: ${avgExpense.toStringAsFixed(0)} ₽/мес\n\n"
+             "💡 Рекомендации:\n"
+             "1. Сократите траты на ${(avgExpense * 0.2).toStringAsFixed(0)} ₽ (20%)\n"
+             "2. Найдите дополнительный доход\n"
+             "3. Ведите учёт всех мелких трат";
+    }
+
+    final remaining = targetAmount - currentBalance;
+    final monthsNeeded = remaining / monthlySavings;
+
+    return "💰 Чтобы купить за ${targetAmount.toStringAsFixed(0)} ₽:\n\n"
+           "📊 На счетах: ${currentBalance.toStringAsFixed(0)} ₽\n"
+           "📊 Нужно ещё: ${remaining.toStringAsFixed(0)} ₽\n"
+           "📊 Свободно в месяц: ${monthlySavings.toStringAsFixed(0)} ₽\n"
+           "📊 Срок: ${monthsNeeded.toStringAsFixed(1)} мес.\n\n"
+           "💡 Сократите расходы на 10-20% для ускорения!";
+  }
+
+  Future<String> _getSpendingAnalysis() async {
+    final transactions = await _db.getTransactions();
+    final now = DateTime.now();
+    final threeMonthsAgo = DateTime(now.year, now.month - 3, 1);
+
+    final recentTransactions = transactions.where((t) {
+      final date = DateTime.parse(t['date']);
+      return date.isAfter(threeMonthsAgo) && t['type'] == 'expense';
+    }).toList();
+
+    if (recentTransactions.isEmpty) {
+      return "📊 Пока недостаточно данных.\nДобавьте больше транзакций!";
+    }
+
+    final categoryExpenses = <String, double>{};
+    for (var t in recentTransactions) {
+      final cat = t['category'] ?? 'Другое';
+      categoryExpenses[cat] = (categoryExpenses[cat] ?? 0) + t['amount'];
+    }
+
+    final sortedCategories = categoryExpenses.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final total = categoryExpenses.values.fold(0.0, (a, b) => a + b);
+
+    final buffer = StringBuffer("📊 Анализ расходов за 3 месяца:\n\n");
+    buffer.write("💸 Всего: ${total.toStringAsFixed(0)} ₽\n\nТоп категорий:\n");
+
+    for (var i = 0; i < sortedCategories.length && i < 5; i++) {
+      final entry = sortedCategories[i];
+      final percent = (entry.value / total * 100);
+      buffer.write("${i + 1}. ${entry.key}: ${entry.value.toStringAsFixed(0)} ₽ (${percent.toStringAsFixed(0)}%)\n");
+    }
+
+    return buffer.toString();
+  }
+
+  Future<String> _getSavingTips() async {
+    final transactions = await _db.getTransactions();
+    final now = DateTime.now();
+    final threeMonthsAgo = DateTime(now.year, now.month - 3, 1);
+
+    final recentTransactions = transactions.where((t) {
+      final date = DateTime.parse(t['date']);
+      return date.isAfter(threeMonthsAgo) && t['type'] == 'expense';
+    }).toList();
+
+    final categoryExpenses = <String, double>{};
+    for (var t in recentTransactions) {
+      final cat = t['category'] ?? 'Другое';
+      categoryExpenses[cat] = (categoryExpenses[cat] ?? 0) + t['amount'];
+    }
+
+    if (categoryExpenses.isEmpty) {
+      return "💡 Добавьте транзакции для персональных советов!";
+    }
+
+    final topCategory = categoryExpenses.entries.reduce((a, b) => a.value > b.value ? a : b);
+    final potentialSavings = topCategory.value * 0.2;
+
+    return "💡 Советы по экономии:\n\n"
+           "1. 🔝 Ваша топ категория: '${topCategory.key}'\n"
+           "   Тратите: ${topCategory.value.toStringAsFixed(0)} ₽/3 мес\n"
+           "   Сократите на 20% = ${potentialSavings.toStringAsFixed(0)} ₽\n\n"
+           "2. 📱 Отмените неиспользуемые подписки\n"
+           "3. 🛒 Планируйте покупки заранее\n"
+           "4. 🍳 Готовьте дома вместо доставки\n\n"
+           "Экономия в месяц: до ${(potentialSavings / 3).toStringAsFixed(0)} ₽";
+  }
+
+  String _getHelpMessage() {
+    return "💡 Я могу помочь:\n\n"
+           "🛒 'Хочу купить телефон за 50000 ₽'\n"
+           "📊 'Где я трачу больше всего'\n"
+           "💰 'Как сэкономить'\n\n"
+           "Попробуйте спросить!";
+  }
+
+  Future<Map<String, dynamic>> _getFinancialStats() async {
+    final transactions = await _db.getTransactions();
+    final now = DateTime.now();
+    final threeMonthsAgo = DateTime(now.year, now.month - 3, 1);
+
+    final recentTransactions = transactions.where((t) {
+      final date = DateTime.parse(t['date']);
+      return date.isAfter(threeMonthsAgo);
+    }).toList();
+
+    final monthlyIncome = recentTransactions
+        .where((t) => t['type'] == 'income')
+        .fold(0.0, (sum, t) => sum + t['amount']) / 3;
+
+    final monthlyExpense = recentTransactions
+        .where((t) => t['type'] == 'expense')
+        .fold(0.0, (sum, t) => sum + t['amount']) / 3;
+
+    final categoryExpenses = <String, double>{};
+    for (var t in recentTransactions.where((t) => t['type'] == 'expense')) {
+      final cat = t['category'] ?? 'Другое';
+      categoryExpenses[cat] = (categoryExpenses[cat] ?? 0) + t['amount'];
+    }
+
+    final topCategory = categoryExpenses.isNotEmpty
+        ? categoryExpenses.entries.reduce((a, b) => a.value > b.value ? a : b).key
+        : 'Нет данных';
+
+    final accounts = await _db.getAccounts();
+    final balance = accounts.fold(0.0, (sum, acc) => sum + (acc['balance'] ?? 0));
+
+    return {
+      'balance': balance,
+      'monthlyIncome': monthlyIncome,
+      'monthlyExpense': monthlyExpense,
+      'topCategory': topCategory,
+    };
+  }
+
+  Future<String> _getOpenAIAdvice(String question) async {
+    return "OpenAI отключен. Используйте rule-based режим.";
+  }
+}

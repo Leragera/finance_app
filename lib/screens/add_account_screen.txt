@@ -1,0 +1,161 @@
+import 'package:flutter/material.dart';
+import '../database/db_helper.dart';
+
+class AddAccountScreen extends StatefulWidget {
+  const AddAccountScreen({super.key});
+
+  @override
+  State<AddAccountScreen> createState() => _AddAccountScreenState();
+}
+
+class _AddAccountScreenState extends State<AddAccountScreen> {
+  final nameController = TextEditingController();
+  final balanceController = TextEditingController();
+  String currency = "₽";
+  Color selectedColor = Colors.blue;
+
+  final colors = [
+    Colors.blue,
+    Colors.green,
+    Colors.orange,
+    Colors.purple,
+    Colors.red,
+  ];
+
+  void saveAccount() async {
+    await DBHelper.instance.insertAccount({
+      'name': nameController.text,
+      'balance': double.tryParse(balanceController.text) ?? 0,
+      'currency': currency,
+      'color': selectedColor.value,
+    });
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 🔥 Определяем тему ОДИН РАЗ
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // 🔥 ИСПРАВЛЕНО: .shade вместо [] — гарантированно не null!
+    final fillColor = isDark ? Colors.grey.shade800 : Colors.grey.shade100;
+    final borderColor = isDark ? Colors.grey.shade700 : Colors.grey.shade300;
+    final focusBorderColor = isDark ? Colors.grey.shade600 : Colors.grey.shade400;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text("Новый счет")),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // 🔥 Поле "Название" — ИСПРАВЛЕНО
+            TextField(
+              controller: nameController,
+              decoration: InputDecoration(
+                labelText: "Название",
+                border: const OutlineInputBorder(),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                filled: true,
+                fillColor: fillColor,  // ✅ .shade, не []!
+                focusedBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: focusBorderColor, width: 1),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: borderColor, width: 1),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // 🔥 Поле "Баланс" — ИСПРАВЛЕНО
+            TextField(
+              controller: balanceController,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: "Баланс",
+                border: const OutlineInputBorder(),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                filled: true,
+                fillColor: fillColor,  // ✅ .shade, не []!
+                focusedBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: focusBorderColor, width: 1),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: borderColor, width: 1),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            DropdownButton<String>(
+              value: currency,
+              items: ["₽", "\$", "€"]
+                  .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                  .toList(),
+              onChanged: (val) => setState(() => currency = val!),
+              underline: Container(height: 1, color: borderColor),
+            ),
+            const SizedBox(height: 10),
+
+            Wrap(
+              spacing: 10,
+              children: colors.map((c) {
+                return GestureDetector(
+                  onTap: () => setState(() => selectedColor = c),
+                  child: Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: c,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        width: selectedColor == c ? 3 : 1,
+                        color: selectedColor == c
+                            ? Colors.black
+                            : Colors.grey.shade400,
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 20),
+
+            Container(
+              margin: const EdgeInsets.all(8),
+              child: ElevatedButton(
+                onPressed: saveAccount,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey.shade300,  // ✅ .shade!
+                  foregroundColor: Colors.black,
+                  minimumSize: const Size(160, 36),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  elevation: 0,
+                ),
+                child: const Text("Сохранить", style: TextStyle(fontSize: 14)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    nameController.dispose();
+    balanceController.dispose();
+    super.dispose();
+  }
+}

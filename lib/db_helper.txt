@@ -1,0 +1,470 @@
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart';
+
+class DBHelper {
+  static final DBHelper instance = DBHelper._init();
+  static Database? _database;
+
+  DBHelper._init();
+
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDB('finance.db');
+    return _database!;
+  }
+
+  Future<Database> _initDB(String filePath) async {
+    final dbPath = await getDatabasesPath();
+    final path = join(dbPath, filePath);
+
+    return await openDatabase(
+      path,
+      version: 7, // Увеличил версию, чтобы сработал апгрейд
+      onCreate: _createDB,
+      onUpgrade: _onUpgrade,
+    );
+  }
+
+  Future _createDB(Database db, int version) async {
+    // Таблица категорий
+    await db.execute('''
+      CREATE TABLE categories(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        UNIQUE(name, type) ON CONFLICT REPLACE
+      )
+    ''');
+
+    // Таблица транзакций
+    await db.execute('''
+      CREATE TABLE transactions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        amount REAL,
+        type TEXT,
+        category TEXT,
+        accountId INTEGER,
+        date TEXT
+      )
+    ''');
+
+    // Таблица счетов
+    await db.execute('''
+      CREATE TABLE accounts(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        balance REAL,
+        currency TEXT,
+        color INTEGER
+      )
+    ''');
+
+    // Таблица чата
+    await db.execute('''
+      CREATE TABLE chat_messages(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        timestamp TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+    CREATE TABLE category_limits(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      limitAmount REAL NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      UNIQUE(category, month, year) ON CONFLICT REPLACE
+    )
+    ''');
+
+    // 🎯 Таблица накопительных целей
+    await db.execute('''
+    CREATE TABLE goals(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      targetAmount REAL NOT NULL,
+      currentAmount REAL DEFAULT 0,
+      deadline TEXT,
+      color INTEGER,
+      icon TEXT,
+      createdDate TEXT
+    )
+    ''');
+
+    // 💸 Таблица переводов между счетами
+    await db.execute('''
+    CREATE TABLE transfers(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fromAccountId INTEGER NOT NULL,
+      toAccountId INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT,
+      date TEXT NOT NULL
+    )
+    ''');
+
+    // Начальные категории
+    await db.insert('categories', {'name': 'Еда', 'type': 'expense'});
+    await db.insert('categories', {'name': 'Транспорт', 'type': 'expense'});
+    await db.insert('categories', {'name': 'Развлечения', 'type': 'expense'});
+    await db.insert('categories', {'name': 'Зарплата', 'type': 'income'});
+    await db.insert('categories', {'name': 'Подарки', 'type': 'income'});
+  }
+
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    print('🔄 Миграция БД: $oldVersion -> $newVersion');
+
+    if (oldVersion < 4) {
+      // 🔥 Исправлено: IF NOT EXISTS, чтобы не падало при ошибках
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS chat_messages(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          timestamp TEXT NOT NULL
+        )
+      ''');
+    }
+    if (oldVersion < 6) {
+        print('📊 Создание таблицы category_limits...');
+        await db.execute('''
+        CREATE TABLE IF NOT EXISTS category_limits(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          category TEXT NOT NULL,
+          limitAmount REAL NOT NULL,
+          month INTEGER NOT NULL,
+          year INTEGER NOT NULL,
+          UNIQUE(category, month, year) ON CONFLICT REPLACE
+        )
+        ''');
+      }
+  }
+
+  // ... (Тут методы для транзакций и счетов, их не меняем) ...
+  Future<int> insertTransaction(Map<String, dynamic> data) async {
+    final db = await database;
+    return await db.insert('transactions', data);
+  }
+  Future<List<Map<String, dynamic>>> getTransactions() async {
+    final db = await database;
+    return await db.query('transactions', orderBy: 'date DESC');
+  }
+  Future<Map<String, dynamic>?> getTransactionById(int id) async {
+    final db = await database;
+    final result = await db.query('transactions', where: 'id = ?', whereArgs: [id]);
+    return result.isNotEmpty ? result.first : null;
+  }
+  Future<int> insertAccount(Map<String, dynamic> account) async {
+    final db = await database;
+    return db.insert('accounts', account);
+  }
+  Future<List<Map<String, dynamic>>> getAccounts() async {
+    final db = await database;
+    return db.query('accounts');
+  }
+  Future<void> updateAccountBalance(int accountId, double amount, String type) async {
+    final db = await database;
+    final result = await db.query('accounts', where: 'id = ?', whereArgs: [accountId]);
+    if (result.isEmpty) return;
+    double currentBalance = result.first['balance'] as double;
+    if (type == 'income') currentBalance += amount; else currentBalance -= amount;
+    await db.update('accounts', {'balance': currentBalance}, where: 'id = ?', whereArgs: [accountId]);
+  }
+  Future<void> updateTransaction(int id, Map<String, dynamic> newData) async {
+    final db = await database;
+    final oldTransaction = await getTransactionById(id);
+    if (oldTransaction == null) return;
+    await db.update('transactions', newData, where: 'id = ?', whereArgs: [id]);
+    if (oldTransaction['type'] == 'income') {
+      await updateAccountBalance(oldTransaction['accountId'], oldTransaction['amount'], 'expense');
+    } else {
+      await updateAccountBalance(oldTransaction['accountId'], oldTransaction['amount'], 'income');
+    }
+    await updateAccountBalance(newData['accountId'], newData['amount'], newData['type']);
+  }
+  Future<void> deleteTransaction(int id, int accountId, double amount, String type) async {
+    final db = await database;
+    await db.delete('transactions', where: 'id = ?', whereArgs: [id]);
+    if (type == 'income') await updateAccountBalance(accountId, amount, 'expense');
+    else await updateAccountBalance(accountId, amount, 'income');
+  }
+  Future<void> updateAccount(int id, Map<String, dynamic> data) async {
+    final db = await database;
+    await db.update('accounts', data, where: 'id = ?', whereArgs: [id]);
+  }
+  Future<void> deleteAccount(int id) async {
+    final db = await database;
+    await db.delete('accounts', where: 'id = ?', whereArgs: [id]);
+  }
+  Future<int> insertCategory(Map<String, dynamic> category) async {
+    final db = await database;
+    return db.insert('categories', category);
+  }
+  Future<List<Map<String, dynamic>>> getCategories(String type) async {
+    final db = await database;
+    return db.query('categories', where: 'type = ?', whereArgs: [type]);
+  }
+  Future<void> removeDuplicateCategories() async {
+    final db = await database;
+    await db.rawDelete("DELETE FROM categories WHERE type = 'expense' AND id NOT IN (SELECT MIN(id) FROM categories WHERE type = 'expense' GROUP BY name)");
+    await db.rawDelete("DELETE FROM categories WHERE type = 'income' AND id NOT IN (SELECT MIN(id) FROM categories WHERE type = 'income' GROUP BY name)");
+  }
+
+
+  // ==========================================
+  // 🔥 МЕТОДЫ ДЛЯ ЧАТА (ИСПРАВЛЕНО)
+  // ==========================================
+  Future<int> saveChatMessage(String role, String content) async {
+    try {
+      final db = await database;
+      final id = await db.insert('chat_messages', {
+        'role': role,
+        'content': content,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+      print('✅ УСПЕХ: Сообщение сохранено в БД! ID: $id, Роль: $role');
+      return id;
+    } catch (e) {
+      print('❌ ОШИБКА БД: Не удалось сохранить сообщение! Ошибка: $e');
+      return -1;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getChatMessages() async {
+    try {
+      final db = await database;
+      final messages = await db.query('chat_messages', orderBy: 'timestamp ASC');
+      print('📚 Загружено сообщений из БД: ${messages.length}');
+      return messages;
+    } catch (e) {
+      print('❌ ОШИБКА БД: Не удалось загрузить сообщения! Ошибка: $e');
+      return [];
+    }
+  }
+
+  Future<void> clearChatMessages() async {
+    final db = await database;
+    await db.delete('chat_messages');
+    print('🗑️ История чата очищена');
+  }
+
+  // 💰 Сохранить лимит для категории
+  Future<void> saveCategoryLimit(String category, double amount, int month, int year) async {
+    final db = await database;
+    await db.insert(
+      'category_limits',
+      {
+        'category': category,
+        'limitAmount': amount,
+        'month': month,
+        'year': year,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  // 💰 Получить лимит для категории
+  Future<double?> getCategoryLimit(String category, int month, int year) async {
+    final db = await database;
+    final result = await db.query(
+      'category_limits',
+      where: 'category = ? AND month = ? AND year = ?',
+      whereArgs: [category, month, year],
+    );
+    if (result.isEmpty) return null;
+    return result.first['limitAmount'] as double?;
+  }
+
+  // 💰 Получить все лимиты на текущий месяц
+  Future<List<Map<String, dynamic>>> getCurrentMonthLimits() async {
+    final db = await database;
+    final now = DateTime.now();
+    return await db.query(
+      'category_limits',
+      where: 'month = ? AND year = ?',
+      whereArgs: [now.month, now.year],
+    );
+  }
+
+  // 💰 Удалить лимит
+  Future<void> deleteCategoryLimit(int id) async {
+    final db = await database;
+    await db.delete('category_limits', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // ==========================================
+  // 🎯 МЕТОДЫ ДЛЯ НАКОПИТЕЛЬНЫХ ЦЕЛЕЙ
+  // ==========================================
+
+  /// Создать новую цель
+  Future<int> createGoal({
+    required String name,
+    required double targetAmount,
+    String? deadline,
+    int? color,
+    String? icon,
+  }) async {
+    final db = await database;
+    return await db.insert('goals', {
+      'name': name,
+      'targetAmount': targetAmount,
+      'currentAmount': 0,
+      'deadline': deadline,
+      'color': color ?? 0xFF2196F3,
+      'icon': icon ?? '💰',
+      'createdDate': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// Получить все цели
+  Future<List<Map<String, dynamic>>> getGoals() async {
+    final db = await database;
+    return await db.query('goals', orderBy: 'createdDate DESC');
+  }
+
+  /// Получить цель по ID
+  Future<Map<String, dynamic>?> getGoalById(int id) async {
+    final db = await database;
+    final result = await db.query('goals', where: 'id = ?', whereArgs: [id]);
+    return result.isNotEmpty ? result.first : null;
+  }
+
+  /// Обновить текущую сумму цели
+  Future<void> updateGoalAmount(int id, double amount) async {
+    final db = await database;
+    await db.update('goals', {'currentAmount': amount}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Удалить цель
+  Future<void> deleteGoal(int id) async {
+    final db = await database;
+    await db.delete('goals', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Перевести деньги в цель (из счёта)
+  Future<void> transferToGoal({
+    required int fromAccountId,
+    required int goalId,
+    required double amount,
+  }) async {
+    final db = await database;
+
+    // 1. Снимаем со счёта
+    final accountResult = await db.query('accounts', where: 'id = ?', whereArgs: [fromAccountId]);
+    if (accountResult.isEmpty) return;
+
+    double currentBalance = accountResult.first['balance'] as double;
+    if (currentBalance < amount) {
+      throw Exception('Недостаточно средств на счёте');
+    }
+
+    await db.update('accounts', {'balance': currentBalance - amount}, where: 'id = ?', whereArgs: [fromAccountId]);
+
+    // 2. Добавляем в цель
+    final goalResult = await db.query('goals', where: 'id = ?', whereArgs: [goalId]);
+    if (goalResult.isEmpty) return;
+
+    double currentGoalAmount = goalResult.first['currentAmount'] as double;
+    await db.update('goals', {'currentAmount': currentGoalAmount + amount}, where: 'id = ?', whereArgs: [goalId]);
+
+    // 3. Записываем перевод
+    await db.insert('transfers', {
+      'fromAccountId': fromAccountId,
+      'toAccountId': 0, // 0 означает цель (копилку)
+      'amount': amount,
+      'note': 'Пополнение цели',
+      'date': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// Вернуть деньги из цели на счёт
+  Future<void> transferFromGoal({
+    required int goalId,
+    required int toAccountId,
+    required double amount,
+  }) async {
+    final db = await database;
+
+    // 1. Снимаем с цели
+    final goalResult = await db.query('goals', where: 'id = ?', whereArgs: [goalId]);
+    if (goalResult.isEmpty) return;
+
+    double currentGoalAmount = goalResult.first['currentAmount'] as double;
+    if (currentGoalAmount < amount) {
+      throw Exception('Недостаточно средств в цели');
+    }
+
+    await db.update('goals', {'currentAmount': currentGoalAmount - amount}, where: 'id = ?', whereArgs: [goalId]);
+
+    // 2. Добавляем на счёт
+    final toAccount = await db.query('accounts', where: 'id = ?', whereArgs: [toAccountId]);
+    if (toAccount.isEmpty) throw Exception('Целевой счёт не найден');
+    double toBalance = toAccount.first['balance'] as double;
+    await db.update('accounts', {'balance': toBalance + amount}, where: 'id = ?', whereArgs: [toAccountId]);
+
+    // 3. Записываем перевод
+    await db.insert('transfers', {
+      'fromAccountId': 0,
+      'toAccountId': toAccountId,
+      'amount': amount,
+      'note': 'Вывод из цели',
+      'date': DateTime.now().toIso8601String(),
+    });
+  }
+
+  // ==========================================
+  // 💸 МЕТОДЫ ДЛЯ ПЕРЕВОДОВ МЕЖДУ СЧЕТАМИ
+  // ==========================================
+
+  /// Перевод между счетами
+  Future<void> transferBetweenAccounts({
+    required int fromAccountId,
+    required int toAccountId,
+    required double amount,
+    String? note,
+  }) async {
+    final db = await database;
+
+    if (fromAccountId == toAccountId) {
+      throw Exception('Нельзя перевести на тот же счёт');
+    }
+
+    // 1. Проверяем баланс исходного счёта
+    final fromAccount = await db.query('accounts', where: 'id = ?', whereArgs: [fromAccountId]);
+    if (fromAccount.isEmpty) throw Exception('Счёт не найден');
+
+    double fromBalance = fromAccount.first['balance'] as double;
+    if (fromBalance < amount) {
+      throw Exception('Недостаточно средств на счёте');
+    }
+
+    // 2. Снимаем с исходного счёта
+    await db.update('accounts', {'balance': fromBalance - amount}, where: 'id = ?', whereArgs: [fromAccountId]);
+
+    // 3. Добавляем на целевой счёт
+    final toAccount = await db.query('accounts', where: 'id = ?', whereArgs: [toAccountId]);
+    if (toAccount.isEmpty) throw Exception('Целевой счёт не найден');
+
+    double toBalance = toAccount.first['balance'] as double;
+    await db.update('accounts', {'balance': toBalance + amount}, where: 'id = ?', whereArgs: [toAccountId]);
+
+    // 4. Записываем перевод
+    await db.insert('transfers', {
+      'fromAccountId': fromAccountId,
+      'toAccountId': toAccountId,
+      'amount': amount,
+      'note': note ?? '',
+      'date': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// Получить историю переводов
+  Future<List<Map<String, dynamic>>> getTransfers() async {
+    final db = await database;
+    return await db.query('transfers', orderBy: 'date DESC');
+  }
+}

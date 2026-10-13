@@ -1,0 +1,253 @@
+import 'package:flutter/material.dart';
+import '../database/db_helper.dart';
+
+class LimitsScreen extends StatefulWidget {
+  const LimitsScreen({super.key});
+
+  @override
+  State<LimitsScreen> createState() => _LimitsScreenState();
+}
+
+class _LimitsScreenState extends State<LimitsScreen> {
+  List<Map<String, dynamic>> _limits = [];
+  Map<String, double> _spentByCategory = {}; // 🔥 Траты по категориям
+  final List<String> _categories = [
+    'Еда',
+    'Транспорт',
+    'Развлечения',
+    'Одежда',
+    'Здоровье',
+    'Продукты',
+    'Кафе',
+    'Такси',
+    'Подписки',
+    'Другое'
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLimits();
+  }
+
+  Future<void> _loadLimits() async {
+    final limits = await DBHelper.instance.getCurrentMonthLimits();
+    final transactions = await DBHelper.instance.getTransactions();
+
+    // 🔥 Считаем траты по каждой категории за текущий месяц
+    final now = DateTime.now();
+    final spentByCategory = <String, double>{};
+
+    for (var t in transactions.where((t) => t['type'] == 'expense')) {
+      final date = DateTime.parse(t['date']);
+      if (date.month == now.month && date.year == now.year) {
+        final category = t['category'] ?? 'Другое';
+        spentByCategory[category] = (spentByCategory[category] ?? 0) + t['amount'];
+      }
+    }
+
+    setState(() {
+      _limits = limits;
+      _spentByCategory = spentByCategory;
+    });
+  }
+
+  // 🔥 МЕТОД ДЛЯ УСТАНОВКИ ЛИМИТА
+  Future<void> _setLimit(String category) async {
+    print('🔵 Нажата категория: $category');
+    final currentLimit = await DBHelper.instance.getCategoryLimit(
+      category,
+      DateTime.now().month,
+      DateTime.now().year,
+    );
+    final controller = TextEditingController(
+      text: currentLimit?.toStringAsFixed(0) ?? '',
+    );
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Лимит для "$category"'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Сумма в ₽',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.attach_money),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              print('🔴 Отмена нажата');
+              Navigator.pop(context);
+            },
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              print('🟢 Сохранение нажато');
+              final amount = double.tryParse(controller.text);
+              if (amount != null && amount > 0) {
+                final now = DateTime.now();
+                await DBHelper.instance.saveCategoryLimit(
+                  category,
+                  amount,
+                  now.month,
+                  now.year,
+                );
+                await _loadLimits();
+                if (mounted) Navigator.pop(context);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Лимит: ${amount.toStringAsFixed(0)} ₽')),
+                  );
+                }
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Введите сумму')),
+                );
+              }
+            },
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final monthName = [
+      'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+      'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+    ][now.month - 1];
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Лимиты по категориям'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadLimits,
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            color: Theme.of(context).brightness == Brightness.dark
+                ? Colors.grey[800]
+                : Colors.blue[50],
+            child: Column(
+              children: [
+                Text(
+                  '$monthName ${now.year}',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Нажмите на категорию для установки лимита',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: _categories.length,
+              itemBuilder: (context, index) {
+                final category = _categories[index];
+                final limit = _limits.firstWhere(
+                  (l) => l['category'] == category,
+                  orElse: () => <String, dynamic>{},
+                );
+                final hasLimit = limit.isNotEmpty;
+                final limitAmount = hasLimit ? (limit['limitAmount'] as double) : 0.0;
+                final spentAmount = _spentByCategory[category] ?? 0.0;
+                final percentUsed = limitAmount > 0 ? (spentAmount / limitAmount * 100).clamp(0, 100) : 0.0;
+                final isExceeded = spentAmount > limitAmount;
+
+                return ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: hasLimit
+                        ? (isExceeded ? Colors.red[100] : Colors.green[100])
+                        : Colors.grey[200],
+                    child: Icon(
+                      hasLimit
+                          ? (isExceeded ? Icons.warning : Icons.check_circle)
+                          : Icons.add_circle_outline,
+                      color: hasLimit
+                          ? (isExceeded ? Colors.red : Colors.green)
+                          : Colors.grey,
+                    ),
+                  ),
+                  title: Text(
+                    category,
+                    style: const TextStyle(fontWeight: FontWeight.w500),
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 4),
+                      Text(
+                        hasLimit
+                            ? 'Потрачено: ${spentAmount.toStringAsFixed(0)} ₽ из ${limitAmount.toStringAsFixed(0)} ₽'
+                            : 'Лимит не установлен',
+                        style: TextStyle(
+                          color: hasLimit
+                              ? (isExceeded ? Colors.red[700] : Colors.green[700])
+                              : Colors.grey[600],
+                        ),
+                      ),
+                      // 🔥 ВОЗВРАЩАЕМ ПОЛОСКУ ЗАПОЛНЯЕМОСТИ
+                      if (hasLimit) ...[
+                        const SizedBox(height: 6),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value: (percentUsed / 100).clamp(0, 1),
+                            backgroundColor: Colors.grey.shade200,
+                            color: isExceeded
+                                ? Colors.red
+                                : percentUsed > 80
+                                    ? Colors.orange
+                                    : Colors.green,
+                            minHeight: 8,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${percentUsed.toStringAsFixed(0)}% использовано',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: isExceeded ? Colors.red[700] : Colors.grey[600],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    print('Клик по категории: $category');
+                    _setLimit(category);
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
